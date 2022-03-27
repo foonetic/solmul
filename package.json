@@ -31,6 +31,7 @@
     "typescript": "^4.6.3"
   },
   "dependencies": {
+    "cross-fetch": "^3.1.5",
     "express": "^4.17.3",
     "ws": "^8.5.0"
   }

@@ -1,13 +1,34 @@
 import express from "express";
 import { WebSocketServer } from "ws";
+import fetch from "cross-fetch";
 
 async function main() {
   const app = express();
+  app.use(express.json());
+
   const port = 8899;
   const port_ws = port + 1;
-  app.get("/", (request, response) => {
-    console.log(`${JSON.stringify(request)}`);
-    response.send("hello world!");
+  const forwarding_url = "http://127.0.0.1:37269";
+
+  app.post("/", async (request, response) => {
+    console.log(`getting request: ${JSON.stringify(request.body, undefined, 2)}`);
+    const res = await fetch(forwarding_url, {
+      method: "POST",
+      body: JSON.stringify(request.body),
+      headers: {
+        "content-type": "application/json",
+      },
+    });
+    console.log(
+      `response status: ${res.status} ${res.statusText} ${JSON.stringify(
+        res.headers,
+        undefined,
+        2
+      )}`
+    );
+    const res_json = await res.json();
+    console.log(`${JSON.stringify(res_json)}`);
+    response.status(res.status).send(res_json);
   });
 
   app.listen(port, () => {
