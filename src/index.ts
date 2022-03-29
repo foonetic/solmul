@@ -4,6 +4,15 @@ import fetch from "cross-fetch";
 import { ArgumentParser } from "argparse";
 import { URL } from "url";
 
+/////////////////////////////////////////////////////////////////////////////
+// get url
+
+/**
+ * get the solana endpoint url
+ *
+ * @param input input string
+ * @returns a value with rpc_url and ws_url
+ */
 function getUrl(input: string) {
   let real_url: string;
 
@@ -32,6 +41,9 @@ function getUrl(input: string) {
     ws_url: `${ws_protocol}//${parsed_url.hostname}${ws_port}`,
   };
 }
+
+/////////////////////////////////////////////////////////////////////////////
+// web socket
 
 interface WebSocketMethodCall {
   id: number;
@@ -114,16 +126,39 @@ const subscrptionTypes = [
   "vote",
 ];
 
+/**
+ *
+ */
 const subscribe_methods = subscrptionTypes.map((x) => `${x}Subscribe`);
+/**
+ *
+ * @param method
+ * @returns
+ */
 function isSubscribe(method: string) {
   return subscribe_methods.find((x) => x == method) !== undefined;
 }
-
+/**
+ *
+ */
 const unsubscribe_methods = subscrptionTypes.map((x) => `${x}Unsubscribe`);
+/**
+ *
+ * @param method
+ * @returns
+ */
 function isUnsubscribe(method: string) {
   return unsubscribe_methods.find((x) => x == method) !== undefined;
 }
+/**
+ *
+ */
 const notification_methods = subscrptionTypes.map((x) => `${x}Notification`);
+/**
+ *
+ * @param method
+ * @returns
+ */
 function isNotification(method: string) {
   return notification_methods.find((x) => x == method) !== undefined;
 }
@@ -204,6 +239,13 @@ function processSubscribeResponse(
   }
 }
 
+/**
+ *
+ * @param sub_to_client_id
+ * @param msg
+ * @param ws
+ * @returns
+ */
 function processNotification(
   sub_to_client_id: Map<number, number>,
   msg: WebSocketNotification,
@@ -266,6 +308,11 @@ function processUnsubscribe(
   subs.delete(client_id);
 }
 
+/**
+ *
+ * @param port_ws
+ * @param ws_urls urls for upstream websocket servers
+ */
 function runWs(port_ws: number, ws_urls: string[]) {
   const ws_server = new WebSocketServer({ port: port_ws }, () => {
     console.log(`ws started at ${port_ws}`);
@@ -329,6 +376,14 @@ function runWs(port_ws: number, ws_urls: string[]) {
   });
 }
 
+/////////////////////////////////////////////////////////////////////////////
+// rpc
+
+/**
+ *
+ * @param urls urls of the upstream rpc servers
+ * @param port port number for the rpc server.
+ */
 function runRpc(urls: string[], port: number) {
   const app = express();
   app.use(express.json());
