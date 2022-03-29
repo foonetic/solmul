@@ -5,29 +5,32 @@ import { ArgumentParser } from "argparse";
 import { URL } from "url";
 
 function getUrl(input: string) {
-  function getterInner(input: string) {
-    const parsed_url = new URL(input);
-    const port = parseInt(parsed_url.port === "" ? "8899" : parsed_url.port);
-    const ws_port = port + 1;
-    const ws_protocol = parsed_url.protocol === "https:" ? "wss:" : "ws:";
-    return {
-      rpc_url: `${parsed_url.protocol}//${parsed_url.host}`,
-      ws_url: `${ws_protocol}//${parsed_url.hostname}:${ws_port}`,
-    };
-  }
+  let real_url: string;
 
   switch (input) {
     case "devnet":
-      return getterInner("https://api.devnet.solana.com:8899");
+      real_url = "https://api.devnet.solana.com";
+      break;
     case "mainnet-beta":
-      return getterInner("https://api.mainnet-beta.solana.com:8899");
+      real_url = "https://api.mainnet-beta.solana.com";
+      break;
     case "testnet":
-      return getterInner("https://api.testnet.solana.com:8899");
+      real_url = "https://api.testnet.solana.com";
+      break;
     case "mainnet-beta-serum":
-      return getterInner("https://solana-api.projectserum.com:8899");
+      real_url = "https://solana-api.projectserum.com";
+      break;
     default:
-      return getterInner(input);
+      real_url = input;
+      break;
   }
+  const parsed_url = new URL(real_url);
+  const ws_port = parsed_url.port === "" ? "" : `:${parseInt(parsed_url.port) + 1}`;
+  const ws_protocol = parsed_url.protocol === "https:" ? "wss:" : "ws:";
+  return {
+    rpc_url: `${parsed_url.protocol}//${parsed_url.host}`,
+    ws_url: `${ws_protocol}//${parsed_url.hostname}${ws_port}`,
+  };
 }
 
 interface WebSocketMethodCall {
