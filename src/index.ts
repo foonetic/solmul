@@ -301,12 +301,18 @@ function runWs(port_ws: number, ws_urls: string[]) {
       forwarder.on("message", (data) => {
         const data_string = data.toString();
         const msg = JSON.parse(data_string);
-        console.log(`ws -> message response: ${data_string}`);
+        const show_str = JSON.stringify(msg, function (key, value) {
+          if (key === "data") {
+            return "omitted";
+          }
+          return value;
+        });
+        console.log(`ws -> message response: ${show_str}`);
         if (isResponse(msg)) {
           console.log(`ws :: ${data_string} is response`);
           processSubscribeResponse(msg, client_id_to_sub, sub_to_client_id, ws, subscriptions);
         } else if (isNotification(msg.method)) {
-          console.log("ws :: is notification");
+          console.log(`ws :: ${show_str} is notification`);
           processNotification(sub_to_client_id, msg, ws);
         } else {
           ws.send(data);
