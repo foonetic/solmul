@@ -79,6 +79,11 @@ interface WebSocketNotification extends WebSocketMethodCall {
    */
   params: {
     subscription: number;
+    result: {
+      context: {
+        slot: number;
+      };
+    };
   };
 }
 
@@ -223,7 +228,10 @@ interface StreamMapper {
   /**
    * mapping from mapper_id to the downstream information
    */
-  mapper_id_to_downstream: Map<number, { downstream_id: number; downstream_method_id: number }>;
+  mapper_id_to_downstream: Map<
+    number,
+    { downstream_id: number; downstream_method_id: number; last_seen_slot: number }
+  >;
   /**
    * indicating if the mapper_id's response has been sent.
    */
@@ -412,6 +420,19 @@ function processNotification(
     console.log(`ws :: ${data_string} doesn't contain a valid downstream`);
     return;
   }
+  // check if the slot should be forwarded to downstream.
+  const slot = msg.params.result.context.slot;
+  if (slot !== undefined) {
+    if (downstream_info.last_seen_slot >= slot) {
+      console.log(
+        `ws :: slot ${slot} from ${index} is too old for subscription ${mapper_id}; last seen slot: ${downstream_info.last_seen_slot}. ${show_str}`
+      );
+      return;
+    }
+    downstream_info.last_seen_slot = slot;
+  } else {
+    console.log(`ws :: ${show_str} doesn't contain a slot`);
+  }
   const ws = stream_mapper.downstreams.get(downstream_info.downstream_id);
   if (ws === undefined) {
     console.log(
@@ -502,6 +523,7 @@ function processSubscribe(
   stream_mapper.mapper_id_to_downstream.set(mapper_id, {
     downstream_id: downstream_id,
     downstream_method_id: downstream_method_id,
+    last_seen_slot: 0,
   });
 
   console.log(
