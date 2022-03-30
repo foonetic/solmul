@@ -69,46 +69,33 @@ interface WebSocketResponse {
   result: number | boolean;
 }
 
-interface WsForwarder {
-  forwarder: WebSocket;
-  client_id_to_sub: Map<number, number>;
-  sub_to_client_id: Map<number, number>;
-}
-
-function newWsForwarder(url: string) {
-  const result: WsForwarder = {
-    forwarder: new WebSocket(url),
-    client_id_to_sub: new Map(),
-    sub_to_client_id: new Map(),
-  };
-  return result;
-}
-
-async function waitForForwarders(forwarders: WsForwarder[]) {
-  await Promise.all(
-    forwarders.map(async ({ forwarder }) => {
-      if (forwarder.readyState !== forwarder.OPEN) {
-        await new Promise((resolve) => forwarder.on("open", resolve));
-      }
-    })
-  );
-}
-
 /**
- * -> user send someSubscribe, with id
+ * -> user send someSubscribe, with id, which is downstream_method_id
  *    `{"jsonrpc":"2.0","method":"accountSubscribe","params":["5oNSm87yBqyKRz2mGqM34xqt2mWKVYvk8CVYKvdnBDBc",{"encoding":"base64","commitment":"processed"}],"id":1}`
- *    record this id in subscriptions
- *    forward this all upstreams
+ *    - create a new mapper_id, mapping to this downstream_id and the downstream_method_id
+ *    - replace the id with mapper_id, and send it to all upstreams.
+ *    - set the mapper_id_of_subs[mapper_id] to false, indicating the response is not sent yet.
  * <- upstream responds, with id corresponding to the id in the request, and `result` field with a number, which is the subscrption id.
  *    `{"jsonrpc":"2.0","result":53,"id":1}`
- *    record the result in the subscriptions map to the corresponding index of the upstream, and record the result->id map in the upstream forwarder.
+ *    - the mapper_id is the id.
+ *    - use the mapper_id to find the downstream_id and its downstream_method_id.
+ *    - if the mapper_id_of_subs[mapper_id] is false, replace the result with downstream_method_id and send the response to downstream_id, and set the mapper_id_of_subs to true.
+ *    - on this upstream, update sub_id_to_mapper_id, and mapper_id_to_sub_id mapping.
  * <- upstream notifies, with subscription id
  *    `{"jsonrpc":"2.0","method":"signatureNotification","params":{"result":{"context":{"slot":112513},"value":{"err":null}},"subscription":55}}`
+ *    - from sub_id_to_mapper_id mapping, find the corresponding mapper_id
+ *    - from mapper_id, find mapped downstream_id
+ *    - replace the subscription with the mapper_id, and send it to downstream.
  * -> user unsubscribes
  *    `{"jsonrpc":"2.0","method":"accountUnsubscribe","params":[64],"id":13}`
- *    the params contain the subscription id, and the id for the action.
+ *    - the params contains the mapper_id to subscribe.
+ *    - create a new mapper_id
+ *    - for each upstream, find the sub_id corresponding to mapper_id.
+ *    - replace params with [sub_id], and send it to upstream.
+ *    - send downstream `{"jsonrpc":"2.0","result": true,"id":13}`
  * <- unstream responds, with id corresponding to the id, and result be true.
- *    `{"jsonrpc":"2.0","method":"accountUnsubscribe","params":[65],"id":14}`
+ *    `{"jsonrpc":"2.0","result": true,"id":14}`
+ *    - ignore
  */
 
 /**
@@ -163,149 +150,223 @@ function isNotification(method: string) {
   return notification_methods.find((x) => x == method) !== undefined;
 }
 
-/**
- * Process a subscribe message.
- * `{"jsonrpc":"2.0","method":"accountSubscribe","params":["5oNSm87yBqyKRz2mGqM34xqt2mWKVYvk8CVYKvdnBDBc",{"encoding":"base64","commitment":"processed"}],"id":1}`
- * this will add an empty number[] to subs's mapping and send the subscription method to the upstreams.
- * @param forwarders the upstream websocket to send the subscribe  request.
- * @param msg the msg parsed.
- * @param subs the id to subscribution id mapping.
- * @returns
- */
-function processSubscribe(
-  forwarders: WsForwarder[],
-  msg: WebSocketSubcribe,
-  subs: Map<number, number[]>
-) {
-  const id = msg.id;
-  if (id === undefined) {
-    console.log(`ws :: id in msg for subscribe is null: ${JSON.stringify(msg)}`);
-    return;
-  }
-  console.log(`ws :: setting up subscription for id ${id}`);
-  subs.set(id, []);
-  forwarders.forEach(async ({ forwarder }, index) => {
-    forwarder.send(JSON.stringify(msg), (err) => {
-      if (err !== undefined) {
-        console.log(`ws :: failed to send data: ${err} at ${index}`);
-      }
-    });
-  });
-}
-
 function isResponse(msg: WebSocketResponse) {
   return msg.id !== undefined && typeof msg.result === "number";
 }
 
-/**
- * Process response to subscribe
- * `{"jsonrpc":"2.0","result":53,"id":1}`
- * the result will be pushed into subs map. And if the subs map is empty, send a response to downstream with result replaced with sub id.
- * also, set the corresponding client id <-> sub id mappin in the forwarder.
- * @param msg
- * @param forwarder
- * @param ws
- * @param subs
- * @returns
- */
-function processSubscribeResponse(
-  msg: WebSocketResponse,
-  client_id_to_sub: Map<number, number>,
-  sub_to_client_id: Map<number, number>,
-  ws: WebSocket,
-  subs: Map<number, number[]>
-) {
-  const id = msg.id;
-  const result = msg.result;
-  const got_ids = subs.get(id);
-  if (got_ids !== undefined) {
-    if (typeof result !== "number") {
-      console.log(`ws :: get a non-number subscription id ${JSON.stringify(msg)}`);
-      return;
-    }
-    client_id_to_sub.set(id, result);
-    sub_to_client_id.set(result, id);
-    if (got_ids.length === 0) {
-      got_ids.push(result);
-      msg.result = id;
-      const to_send = JSON.stringify(msg);
-      console.log(`ws :: ${id} responds with ${to_send}`);
-      ws.send(to_send);
-    } else {
-      console.log(`ws :: ${id} already responsed`);
-    }
-  } else {
-    console.log(`cannot find ${id} in mapping`);
-  }
+interface Upstream {
+  upstream: WebSocket | undefined;
+  ws_url: string;
+  mapper_id_to_sub_id: Map<number, number>;
+  sub_id_to_mapper_id: Map<number, number>;
 }
 
 /**
  *
- * @param sub_to_client_id
+ */
+interface StreamMapper {
+  upstreams: Upstream[];
+  downstreams: Map<number, WebSocket>;
+  current_mapper_id: number;
+  current_downstream_id: number;
+  mapper_id_to_downstream: Map<number, { downstream_id: number; downstream_method_id: number }>;
+  mapper_id_of_subs: Map<number, boolean>;
+  unsubscribe_ids: Map<number, boolean>;
+}
+
+function createStreamMapper(urls: string[]) {
+  const result: StreamMapper = {
+    upstreams: urls.map((url) => {
+      const t: Upstream = {
+        upstream: undefined,
+        ws_url: url,
+        mapper_id_to_sub_id: new Map(),
+        sub_id_to_mapper_id: new Map(),
+      };
+      return t;
+    }),
+    downstreams: new Map(),
+    current_mapper_id: 1,
+    current_downstream_id: 0,
+    mapper_id_to_downstream: new Map(),
+    mapper_id_of_subs: new Map(),
+    unsubscribe_ids: new Map(),
+  };
+  return result;
+}
+
+function resetStreamMapper(stream_mapper: StreamMapper) {
+  stream_mapper.upstreams.forEach((x) => {
+    x.mapper_id_to_sub_id.clear();
+    x.sub_id_to_mapper_id.clear();
+    if (x.upstream !== undefined) {
+      x.upstream.close();
+    }
+    x.upstream = undefined;
+  });
+  stream_mapper.current_mapper_id = 1;
+  stream_mapper.current_downstream_id = 1;
+  stream_mapper.mapper_id_to_downstream.clear();
+  stream_mapper.downstreams.forEach((v) => {
+    v.close();
+  });
+  stream_mapper.downstreams.clear();
+  stream_mapper.mapper_id_of_subs.clear();
+  stream_mapper.unsubscribe_ids.clear();
+}
+
+function addWebSocket(stream_mapper: StreamMapper, ws: WebSocket) {
+  const id = stream_mapper.current_downstream_id;
+  stream_mapper.current_downstream_id++;
+  stream_mapper.downstreams.set(id, ws);
+  return id;
+}
+
+function removeWebSocket(stream_mapper: StreamMapper, downstream_id: number) {
+  stream_mapper.downstreams.delete(downstream_id);
+  if (stream_mapper.downstreams.size == 0) {
+    console.log("ws :: zero downstreams, shutting down all upstreams");
+    resetStreamMapper(stream_mapper);
+  }
+}
+
+/**
+ * Process a subscribe's response.
+ * // `{"jsonrpc":"2.0","result":53,"id":1}`
+ * @param stream_mapper
+ * @param upstream
+ * @param data_string
  * @param msg
- * @param ws
  * @returns
  */
-function processNotification(
-  sub_to_client_id: Map<number, number>,
-  msg: WebSocketNotification,
-  ws: WebSocket
+function processResponse(
+  stream_mapper: StreamMapper,
+  upstream: Upstream,
+  data_string: string,
+  msg: WebSocketResponse,
+  index: number
 ) {
-  const sub_id = msg.params.subscription;
-  const client_id = sub_to_client_id.get(sub_id);
-  if (typeof client_id === "undefined") {
-    console.log(
-      `ws :: ${sub_id} is not found in mapping. cannot forward the msg: ${JSON.stringify(msg)}`
-    );
+  console.log(`ws -> message subscribe response from upstream ${index}: ${data_string}`);
+  msg = msg as WebSocketResponse;
+  const mapper_id = msg.id;
+  const result = msg.result;
+  const is_sub_sent = stream_mapper.mapper_id_of_subs.get(mapper_id);
+  if (is_sub_sent === undefined) {
+    console.log(`ws :: ${data_string} doesn't contain a valid sub id ${mapper_id}`);
+    return;
+  }
+  if (typeof result !== "number") {
+    return;
+  }
+  upstream.mapper_id_to_sub_id.set(mapper_id, result);
+  upstream.sub_id_to_mapper_id.set(result, mapper_id);
+
+  if (is_sub_sent) {
     return;
   }
 
-  msg.params.subscription = client_id;
-
-  console.log(`ws :: forwarding notification: ${client_id} from ${sub_id}`);
+  const downstream_info = stream_mapper.mapper_id_to_downstream.get(mapper_id);
+  if (downstream_info === undefined) {
+    console.log(`ws :: ${data_string} doesn't contain a valid downstream`);
+    return;
+  }
+  const ws = stream_mapper.downstreams.get(downstream_info.downstream_id);
+  if (ws === undefined) {
+    console.log(
+      `ws :: ${data_string}'s downstream ${downstream_info.downstream_id} doesn't exists`
+    );
+    return;
+  }
+  console.log(
+    `ws -> sending sub confirmation to ${downstream_info.downstream_id} with ${downstream_info.downstream_method_id}, mapped from ${mapper_id}`
+  );
+  stream_mapper.mapper_id_of_subs.set(mapper_id, true);
+  msg.id = downstream_info.downstream_method_id;
+  msg.result = mapper_id;
   ws.send(JSON.stringify(msg));
 }
 
 /**
- * Process an unsubscribe message
- * `{"jsonrpc":"2.0","method":"accountUnsubscribe","params":[64],"id":13}`
- * @param forwarders
+ * Process notification
+ *
+ * @param stream_mapper
+ * @param upstream
+ * @param data_string
  * @param msg
- * @param subs
+ * @param index
  * @returns
  */
-function processUnsubscribe(
-  forwarders: WsForwarder[],
-  msg: WebSocketUnsubscribe,
-  subs: Map<number, number[]>,
-  ws: WebSocket
+function processNotification(
+  stream_mapper: StreamMapper,
+  upstream: Upstream,
+  data_string: string,
+  msg: WebSocketNotification,
+  index: number
 ) {
-  const params_in = msg.params;
-  if (params_in.length !== 1) {
-    console.log(`length of params is not right ${JSON.stringify(msg)}`);
+  const show_str = JSON.stringify(msg, function (key, value) {
+    if (key === "data") {
+      return "omitted";
+    }
+    return value;
+  });
+  console.log(`ws -> message notification from upstream ${index}: ${show_str}`);
+
+  const sub_id = msg.params.subscription;
+  const mapper_id = upstream.sub_id_to_mapper_id.get(sub_id);
+  if (mapper_id === undefined) {
+    console.log(`ws :: ${sub_id} is not mapped to a downstream id`);
     return;
   }
-  const client_id = params_in[0];
+  const downstream_info = stream_mapper.mapper_id_to_downstream.get(mapper_id);
+  if (downstream_info === undefined) {
+    console.log(`ws :: ${data_string} doesn't contain a valid downstream`);
+    return;
+  }
+  const ws = stream_mapper.downstreams.get(downstream_info.downstream_id);
+  if (ws === undefined) {
+    console.log(
+      `ws :: ${data_string}'s downstream ${downstream_info.downstream_id} doesn't exists`
+    );
+    return;
+  }
+  msg.params.subscription = mapper_id;
+  console.log(
+    `ws -> notify ${downstream_info.downstream_id} with ${mapper_id} from upstream ${index}/${sub_id}`
+  );
+  ws.send(JSON.stringify(msg));
+}
+/**
+ * Set up the upstream at index of the stream mapper.
+ * @param stream_mapper
+ * @param index index of the upstream
+ */
+async function setupUpstream(stream_mapper: StreamMapper, index: number) {
+  const upstream = stream_mapper.upstreams[index];
+  if (upstream.upstream === undefined) {
+    console.log(`ws :: connecting to upstream ${upstream.ws_url} at ${index}`);
+    upstream.upstream = new WebSocket(upstream.ws_url);
 
-  forwarders.forEach(({ forwarder, client_id_to_sub }, index) => {
-    const sub_id = client_id_to_sub.get(client_id);
-    console.log(`${JSON.stringify(client_id_to_sub)}`);
-    if (typeof sub_id === "undefined") {
-      console.log(`unknown client id ${client_id}`);
-      return;
-    }
-    msg.params = [sub_id];
-    const to_send = JSON.stringify(msg);
-    console.log(`ws :: sending unsub to ${index} with ${to_send}`);
-    forwarder.send(to_send, (err) => {
-      if (err !== undefined) {
-        console.log(`ws :: failed to send data: ${err} at ${index}`);
+    upstream.upstream?.on("message", function (data) {
+      const data_string = data.toString();
+      const msg = JSON.parse(data_string);
+      if (isResponse(msg)) {
+        processResponse(stream_mapper, upstream, data_string, msg, index);
+      } else if (isNotification(msg.method)) {
+        processNotification(stream_mapper, upstream, data_string, msg, index);
+      } else if (msg.result === true && stream_mapper.unsubscribe_ids.has(msg.id)) {
+        console.log(`ws :: ignorning unsubscribe confirmation: ${data_string}`);
+      } else {
+        console.log(`ws -> message forward for upstream ${index}: ${data_string}`);
+        // forward everything else.
+        stream_mapper.downstreams.forEach((ws) => {
+          ws.send(data);
+        });
       }
     });
-  });
-  ws.send(JSON.stringify({ jsonrpc: "2.0", result: true, id: msg.id }));
-
-  subs.delete(client_id);
+  }
+  if (upstream.upstream.readyState !== WebSocket.OPEN) {
+    await new Promise((resolve) => upstream.upstream?.on("open", resolve));
+  }
 }
 
 /**
@@ -318,60 +379,95 @@ function runWs(port_ws: number, ws_urls: string[]) {
     console.log(`ws started at ${port_ws}`);
   });
 
-  ws_server.on("connection", async (ws) => {
-    const subscriptions: Map<number, number[]> = new Map();
-    const forwarders = ws_urls.map((ws_url) => newWsForwarder(ws_url));
-    ws.on("message", async (data) => {
-      await waitForForwarders(forwarders);
+  const stream_mapper = createStreamMapper(ws_urls);
 
-      const msg = JSON.parse(data.toString());
+  ws_server.on("connection", async (ws) => {
+    const downstream_id = addWebSocket(stream_mapper, ws);
+    ws.on("message", async (data) => {
+      await Promise.all(
+        stream_mapper.upstreams.map(async (upstream, i) => {
+          await setupUpstream(stream_mapper, i);
+        })
+      );
+
+      let msg = JSON.parse(data.toString());
       console.log(`ws <- message received: ${data.toString()}`);
 
       if (isSubscribe(msg.method)) {
+        // Process a subscribe message.
+        // `{"jsonrpc":"2.0","method":"accountSubscribe","params":["5oNSm87yBqyKRz2mGqM34xqt2mWKVYvk8CVYKvdnBDBc",{"encoding":"base64","commitment":"processed"}],"id":1}`
         console.log(`ws :: ${msg.method} is subscribe`);
-        processSubscribe(forwarders, msg, subscriptions);
-      } else if (isUnsubscribe(msg.method)) {
-        console.log(`ws :: ${msg.method} is unsubscribe`);
-        processUnsubscribe(forwarders, msg, subscriptions, ws);
-      } else {
-        forwarders.forEach(({ forwarder }) => {
-          forwarder.send(data, (err) => {
+        msg = msg as WebSocketSubcribe;
+        const id = msg.id;
+        if (id === undefined) {
+          console.log(`ws :: ${data.toString()} doesn't contain a valid id`);
+          return;
+        }
+        const mapper_id = stream_mapper.current_mapper_id;
+        stream_mapper.current_mapper_id++;
+        stream_mapper.mapper_id_of_subs.set(mapper_id, false);
+        stream_mapper.mapper_id_to_downstream.set(mapper_id, {
+          downstream_id: downstream_id,
+          downstream_method_id: id,
+        });
+
+        console.log(`ws :: mapping method ${id} of downstream ${downstream_id} to ${mapper_id}`);
+        msg.id = mapper_id;
+        stream_mapper.upstreams.forEach((upstream, index) => {
+          upstream.upstream?.send(JSON.stringify(msg), (err) => {
             if (err !== undefined) {
-              console.log(`failed to send data: ${err}`);
+              console.log(`ws:: sending sub request to ${index} failed: ${err}`);
+            }
+          });
+        });
+      } else if (isUnsubscribe(msg.method)) {
+        // Process unsubscribe
+        // `{"jsonrpc":"2.0","method":"accountUnsubscribe","params":[64],"id":13}`
+        console.log(`ws :: ${msg.method} is unsubscribe`);
+        msg = msg as WebSocketUnsubscribe;
+        const params_in = msg.params;
+        if (params_in.length !== 1) {
+          console.log(`ws :: ${params_in} length not right in ${data.toString()}`);
+          return;
+        }
+        const mapper_id = params_in[0];
+        msg.id = stream_mapper.current_mapper_id;
+        stream_mapper.current_mapper_id++;
+        stream_mapper.unsubscribe_ids.set(msg.id, true);
+        stream_mapper.upstreams.forEach(({ upstream, mapper_id_to_sub_id }, index) => {
+          const sub_id = mapper_id_to_sub_id.get(mapper_id);
+          if (sub_id === undefined) {
+            console.log(`ws :: ${mapper_id} doesn't have corresponding sub_id at ${index}`);
+            return;
+          }
+          msg.params = [sub_id];
+          const to_send = JSON.stringify(msg);
+          console.log(`ws -> sending unsubscribe to ${index} with ${to_send}`);
+          if (upstream === undefined) {
+            console.log(`ws :: upstream at ${index} is not initialized.`);
+            return;
+          }
+          upstream.send(to_send, (err) => {
+            if (err !== undefined) {
+              console.log(`ws :: failed to send unsubscribe to ${index}`);
+            }
+          });
+        });
+        ws.send(JSON.stringify({ jsonrpc: "2.0", result: true, id: msg.id }));
+      } else {
+        stream_mapper.upstreams.forEach(({ upstream }, index) => {
+          upstream?.send(data, (err) => {
+            if (err !== undefined) {
+              console.log(`ws :: failed to send unsubscribe to ${index}`);
             }
           });
         });
       }
     });
 
-    forwarders.forEach(({ forwarder, client_id_to_sub, sub_to_client_id }) => {
-      forwarder.on("message", (data) => {
-        const data_string = data.toString();
-        const msg = JSON.parse(data_string);
-        const show_str = JSON.stringify(msg, function (key, value) {
-          if (key === "data") {
-            return "omitted";
-          }
-          return value;
-        });
-        console.log(`ws -> message response: ${show_str}`);
-        if (isResponse(msg)) {
-          console.log(`ws :: ${data_string} is response`);
-          processSubscribeResponse(msg, client_id_to_sub, sub_to_client_id, ws, subscriptions);
-        } else if (isNotification(msg.method)) {
-          console.log(`ws :: ${show_str} is notification`);
-          processNotification(sub_to_client_id, msg, ws);
-        } else {
-          ws.send(data);
-        }
-      });
-    });
-
     ws.on("close", () => {
-      console.log("closing down the web socket forwarder");
-      forwarders.forEach(({ forwarder }) => {
-        forwarder.close();
-      });
+      console.log(`ws :: removing downstream_id ${downstream_id}`);
+      removeWebSocket(stream_mapper, downstream_id);
     });
   });
 }
