@@ -15,20 +15,21 @@ type rpcCaller struct {
 	Urls []string
 }
 
-type RpcResponseWithCode struct {
+type rpcResponseWithCode struct {
 	Body       []byte
 	StatusCode int
 }
 
-// a handler with multicaller.
-func (multi_caller *rpcCaller) HandleRequest(w http.ResponseWriter, req *http.Request) {
+// handleRequest get the request body and send the requests to all the urls upstream.
+// The first response back is sent back to client.
+func (multi_caller *rpcCaller) handleRequest(w http.ResponseWriter, req *http.Request) {
 	req_body, err := io.ReadAll(req.Body)
 	defer req.Body.Close()
 	if err != nil {
 		return
 	}
 
-	var method_call RpcMethodCall
+	var method_call rpcMethodCall
 	err = bson.UnmarshalExtJSON(req_body, false, &method_call)
 	if err != nil {
 		Logger.Errorf("rpc :: failed to parse requestion body: %+v %s", err, req_body)
@@ -37,17 +38,21 @@ func (multi_caller *rpcCaller) HandleRequest(w http.ResponseWriter, req *http.Re
 
 	ctx, cancel := context.WithCancel(req.Context())
 
-	resp_chan := make(chan *RpcResponseWithCode)
+	resp_chan := make(chan *rpcResponseWithCode)
 
 	for index, url := range multi_caller.Urls {
 		// only send transaction to the first upstream.
-		if method_call.Method == SendTransactionMethod && index > 0 {
+		if method_call.Method == sendTransactionMethod && index > 0 {
 			continue
 		}
 
 		go func(an_url string, index int) {
 			// forwarding the request
 			request_to_upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, an_url, bytes.NewReader(req_body))
+			if err != nil {
+				Logger.Errorf("rpc :: cannot create new request %+v", err)
+				return
+			}
 			request_to_upstream.Header.Add("content-type", "application/json")
 			response, err := http.DefaultClient.Do(request_to_upstream)
 			if errors.Is(err, context.Canceled) {
@@ -72,7 +77,7 @@ func (multi_caller *rpcCaller) HandleRequest(w http.ResponseWriter, req *http.Re
 
 			select {
 			// send the response back
-			case resp_chan <- &RpcResponseWithCode{
+			case resp_chan <- &rpcResponseWithCode{
 				Body:       res_body,
 				StatusCode: response.StatusCode,
 			}:
@@ -82,7 +87,7 @@ func (multi_caller *rpcCaller) HandleRequest(w http.ResponseWriter, req *http.Re
 		}(url, index)
 	}
 
-	var resp *RpcResponseWithCode
+	var resp *rpcResponseWithCode
 
 	select {
 	case resp = <-resp_chan:

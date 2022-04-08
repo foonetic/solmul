@@ -43,12 +43,22 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type IndexedPayload struct {
-	Payload WsPayload
+func findSubscriptionType(method string) string {
+	for _, sub_type := range subscrptionTypes {
+		if method == sub_type+"Subscribe" {
+			return sub_type
+		}
+	}
+
+	return ""
+}
+
+type indexedPayload struct {
+	Payload wsPayload
 	Index   int
 }
 
-func loopRead(ctx context.Context, conn *websocket.Conn, index int, response_chan chan<- IndexedPayload) {
+func loopRead(ctx context.Context, conn *websocket.Conn, index int, response_chan chan<- indexedPayload) {
 read_loop:
 	for {
 		_, data, err := conn.ReadMessage()
@@ -72,7 +82,7 @@ read_loop:
 		}
 
 		// unmarshall the payload, if error, continue
-		value, err := UnmarshalWsPayload(data)
+		value, err := unmarshalWsPayload(data)
 		if err != nil {
 			Logger.Errorf("ws :: %d failed to unmarshal response: %+v, data: %s", index, err, data)
 			continue read_loop
@@ -80,14 +90,14 @@ read_loop:
 
 		// send to response
 		select {
-		case response_chan <- IndexedPayload{Payload: value, Index: index}:
+		case response_chan <- indexedPayload{Payload: value, Index: index}:
 		case <-ctx.Done():
 			break read_loop
 		}
 	}
 }
 
-func loopWrite(ctx context.Context, conn *websocket.Conn, payload_to_write <-chan WsPayload, index int) {
+func loopWrite(ctx context.Context, conn *websocket.Conn, payload_to_write <-chan wsPayload, index int) {
 write_loop:
 	for {
 		select {
@@ -98,7 +108,7 @@ write_loop:
 			if !ok {
 				break write_loop
 			}
-			payload, err := sub_call.ToJson()
+			payload, err := sub_call.toJson()
 			if err != nil {
 				Logger.Warnf("ws :: %d failed to marshal payload %+v", index, err)
 				continue write_loop
@@ -110,30 +120,30 @@ write_loop:
 	}
 }
 
-// Information reguarding an Upstream
-type Upstream struct {
+// Information reguarding an wsUpstream
+type wsUpstream struct {
 	// Index of the upstream
 	Index int
 	// Url
 	Url string
 
 	// Signals
-	RequestChan  chan WsPayload
-	ResponseChan chan<- IndexedPayload
+	RequestChan  chan wsPayload
+	ResponseChan chan<- indexedPayload
 }
 
-// NewUpstream creates a new upstream
-func NewUpstream(index int, url string, response_chan chan<- IndexedPayload) Upstream {
-	return Upstream{
+// newUpstream creates a new upstream
+func newUpstream(index int, url string, response_chan chan<- indexedPayload) wsUpstream {
+	return wsUpstream{
 		Index:        index,
 		Url:          url,
 		ResponseChan: response_chan,
-		RequestChan:  make(chan WsPayload),
+		RequestChan:  make(chan wsPayload),
 	}
 }
 
-// Start starting the upstream.
-func (upstream *Upstream) Start(ctx context.Context) {
+// start starting the upstream.
+func (upstream *wsUpstream) start(ctx context.Context) {
 	Logger.Debugf("up :: starting upstream %d for %s", upstream.Index, upstream.Url)
 	defer Logger.Debugf("up :: shutting down upstream %d for %s", upstream.Index, upstream.Url)
 	dialer := websocket.Dialer{}
@@ -155,18 +165,18 @@ func (upstream *Upstream) Start(ctx context.Context) {
 	}
 }
 
-// Downstream is the downstream information sent from a downstream to stream mapper
-type Downstream struct {
+// wsDownstream is the downstream information sent from a downstream to stream mapper
+type wsDownstream struct {
 	// DownstreamId is the id for the downstream
 	DownstreamId int
 	// ResponseChan is the channel to send the response to downstream
-	ResponseChan chan<- WsPayload
+	ResponseChan chan<- wsPayload
 }
 
-// DownstreamInfo is the information held by StreamMapper
-type DownstreamInfo struct {
+// downstreamInfo is the information held by StreamMapper
+type downstreamInfo struct {
 	// Downstream is the downstream's id and response channel
-	*Downstream
+	*wsDownstream
 	// A set of current active subscriptions (by their mapper_id)
 	Subscriptions map[uint64]bool
 
@@ -177,9 +187,9 @@ type DownstreamInfo struct {
 }
 
 // send sends a payload to response channel, can be cancelled.
-func (downstream *DownstreamInfo) send(payloald WsPayload) {
+func (downstream *downstreamInfo) send(payloald wsPayload) {
 	select {
-	case downstream.Downstream.ResponseChan <- payloald:
+	case downstream.ResponseChan <- payloald:
 	case <-downstream.Context.Done():
 		Logger.Debugf("ws :: downstream %d is done", downstream.DownstreamId)
 	}
@@ -209,21 +219,21 @@ type mapperIdList struct {
 }
 
 // Information for mappers
-type UpstreamMapperInfo struct {
+type upstreamMapperInfo struct {
 	MapperIdToSubId map[uint64]uint64
 	SubIdToMapperId map[uint64]*mapperIdList
 }
 
-type StreamMapperUpstream struct {
-	Upstream
-	UpstreamMapperInfo
+type streamMapperUpstream struct {
+	wsUpstream
+	upstreamMapperInfo
 	Cancel  context.CancelFunc
 	Context context.Context
 	// Unsubscribed contains all the ids that have unsubscribed sent
 	Unsubscribed map[uint64]bool
 }
 
-func (upstream *StreamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uint64, subscription_method string) {
+func (upstream *streamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uint64, subscription_method string) {
 	sub_id, ok := upstream.MapperIdToSubId[mapper_id]
 	if !ok {
 		if _, ok = upstream.Unsubscribed[mapper_id]; !ok {
@@ -232,11 +242,12 @@ func (upstream *StreamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uin
 		return
 	}
 
-	request := WsPayload{
-		Unsubscribe: &WsUnsubscribeMethod{
-			WsMethodCommon: NewWsMethodCommon(unsub_mapper_id),
-			Method:         subscription_method + "Unsubscribe",
-			Params:         []uint64{sub_id},
+	request := wsPayload{
+		Unsubscribe: &wsUnsubscribeMethod{
+			Id:      unsub_mapper_id,
+			JsonRpc: "2.0",
+			Method:  subscription_method + "Unsubscribe",
+			Params:  []uint64{sub_id},
 		},
 	}
 
@@ -259,23 +270,23 @@ func (upstream *StreamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uin
 	}
 }
 
-type StreamMapper struct {
+type streamMapper struct {
 	Urls     []string
 	Upgrader websocket.Upgrader
 
 	// RequestChan is for downstream to send request
-	RequestChan chan IndexedPayload
+	RequestChan chan indexedPayload
 	// ResponseChan is for upstream to send response
-	ResponseChan chan IndexedPayload
+	ResponseChan chan indexedPayload
 
 	// DownstreamIdChan is the channel to send an unique downstream id to newly connecte downstream.
 	DownstreamIdChan chan int
 	// AddDownstreamChan is used to add downstream
-	AddDownstreamChan chan *Downstream
+	AddDownstreamChan chan *wsDownstream
 	// DeleteDownstreamChan is used to delete downsteam
 	DeleteDownstreamChan chan int
 	// Downstreams is the information for downstream
-	Downstreams map[int]*DownstreamInfo
+	Downstreams map[int]*downstreamInfo
 
 	CurrentId         uint64
 	CurrentResponseId uint64
@@ -285,25 +296,25 @@ type StreamMapper struct {
 	UnsubscribeIds map[uint64]bool
 
 	// Upstreams
-	Upstreams []*StreamMapperUpstream
+	Upstreams []*streamMapperUpstream
 }
 
-func NewStreamMapper(urls []string) (*StreamMapper, error) {
+func newStreamMapper(urls []string) (*streamMapper, error) {
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("zero urls")
 	}
 
-	return &StreamMapper{
+	return &streamMapper{
 		Urls:             urls,
 		Upgrader:         websocket.Upgrader{},
 		DownstreamIdChan: make(chan int),
 
-		RequestChan:  make(chan IndexedPayload),
-		ResponseChan: make(chan IndexedPayload),
+		RequestChan:  make(chan indexedPayload),
+		ResponseChan: make(chan indexedPayload),
 
-		AddDownstreamChan:    make(chan *Downstream),
+		AddDownstreamChan:    make(chan *wsDownstream),
 		DeleteDownstreamChan: make(chan int),
-		Downstreams:          make(map[int]*DownstreamInfo),
+		Downstreams:          make(map[int]*downstreamInfo),
 
 		CurrentId:         1,
 		CurrentResponseId: 1,
@@ -314,7 +325,7 @@ func NewStreamMapper(urls []string) (*StreamMapper, error) {
 
 // startDownstreamIdChan launches a go routine and sending downstream ids to startDownstreamIdChan, and downstreams can receive
 // from that channel and get the downstream id.
-func (stream_mapper *StreamMapper) startDownstreamIdChan(ctx context.Context) context.CancelFunc {
+func (stream_mapper *streamMapper) startDownstreamIdChan(ctx context.Context) context.CancelFunc {
 	downstream_id_ctx, downstream_id_cancel := context.WithCancel(ctx)
 	go func() {
 		var downstream_id int = 0
@@ -332,7 +343,7 @@ func (stream_mapper *StreamMapper) startDownstreamIdChan(ctx context.Context) co
 	return downstream_id_cancel
 }
 
-func (stream_mapepr *StreamMapper) nextId() (id uint64) {
+func (stream_mapepr *streamMapper) nextId() (id uint64) {
 	id = stream_mapepr.CurrentId
 	stream_mapepr.CurrentId++
 	return
@@ -344,7 +355,7 @@ func (stream_mapepr *StreamMapper) nextId() (id uint64) {
 // - for each upstream, delete the mapper_id from the two maps, and push it onto the unsubed.
 // - set the UnsubscribeIds to true
 // - delete the upstreams from subscription info
-func (stream_mapper *StreamMapper) unsubscribe(upstreams []*StreamMapperUpstream, mapper_id uint64) {
+func (stream_mapper *streamMapper) unsubscribe(upstreams []*streamMapperUpstream, mapper_id uint64) {
 	info, ok := stream_mapper.SubscriptionInfo[mapper_id]
 	if !ok {
 		Logger.Errorf("ws :: subscription %d is not valid", mapper_id)
@@ -369,16 +380,16 @@ func (stream_mapper *StreamMapper) unsubscribe(upstreams []*StreamMapperUpstream
 	}
 }
 
-func (stream_mapper *StreamMapper) initUpstreams(ctx context.Context, upstream_wg *sync.WaitGroup) {
+func (stream_mapper *streamMapper) initUpstreams(ctx context.Context, upstream_wg *sync.WaitGroup) {
 	if len(stream_mapper.Upstreams) == len(stream_mapper.Urls) {
 		return
 	}
 	Logger.Info("ws :: upstream are starting up")
 	for index, url := range stream_mapper.Urls {
 		upstream_ctx, upstream_cancel := context.WithCancel(ctx)
-		upstream := &StreamMapperUpstream{
-			Upstream: NewUpstream(index, url, stream_mapper.ResponseChan),
-			UpstreamMapperInfo: UpstreamMapperInfo{
+		upstream := &streamMapperUpstream{
+			wsUpstream: newUpstream(index, url, stream_mapper.ResponseChan),
+			upstreamMapperInfo: upstreamMapperInfo{
 				SubIdToMapperId: make(map[uint64]*mapperIdList),
 				MapperIdToSubId: make(map[uint64]uint64),
 			},
@@ -390,12 +401,12 @@ func (stream_mapper *StreamMapper) initUpstreams(ctx context.Context, upstream_w
 		upstream_wg.Add(1)
 		go func() {
 			defer upstream_wg.Done()
-			upstream.Start(upstream_ctx)
+			upstream.start(upstream_ctx)
 		}()
 	}
 }
 
-func (stream_mapper *StreamMapper) stopUpstreams(upstream_wg *sync.WaitGroup) {
+func (stream_mapper *streamMapper) stopUpstreams(upstream_wg *sync.WaitGroup) {
 	for mapper_id, sub_info := range stream_mapper.SubscriptionInfo {
 		if len(sub_info.Upstreams) > 0 {
 			stream_mapper.unsubscribe(stream_mapper.Upstreams, mapper_id)
@@ -412,8 +423,8 @@ func (stream_mapper *StreamMapper) stopUpstreams(upstream_wg *sync.WaitGroup) {
 	stream_mapper.Upstreams = nil
 }
 
-// MainLoop starts the mainloop
-func (stream_mapper *StreamMapper) MainLoop(ctx context.Context) {
+// mainLoop starts the mainloop
+func (stream_mapper *streamMapper) mainLoop(ctx context.Context) {
 	// Launch DownstreamIdChan
 	downstream_id_cancel := stream_mapper.startDownstreamIdChan(ctx)
 	defer downstream_id_cancel()
@@ -430,8 +441,8 @@ main_loop:
 			Logger.Infof("ws :: receiving downstream id: %d", new_downstream.DownstreamId)
 			downstream_ctx, downstream_cancel := context.WithCancel(ctx)
 			defer downstream_cancel()
-			stream_mapper.Downstreams[new_downstream.DownstreamId] = &DownstreamInfo{
-				Downstream:    new_downstream,
+			stream_mapper.Downstreams[new_downstream.DownstreamId] = &downstreamInfo{
+				wsDownstream:  new_downstream,
 				Subscriptions: make(map[uint64]bool),
 				Context:       downstream_ctx,
 				Cancel:        downstream_cancel,
@@ -451,9 +462,10 @@ main_loop:
 					stream_mapper.unsubscribe(stream_mapper.Upstreams, mapper_id)
 				}
 				if downstream, ok := stream_mapper.Downstreams[downstream_id]; ok {
-					downstream.send(WsPayload{ConfirmUnsubscribe: &WsConfirmUnsubscribe{
-						WsMethodCommon: payload.Unsubscribe.WsMethodCommon,
-						Result:         true,
+					downstream.send(wsPayload{ConfirmUnsubscribe: &wsConfirmUnsubscribe{
+						JsonRpc: payload.Unsubscribe.JsonRpc,
+						Id:      payload.Unsubscribe.Id,
+						Result:  true,
 					}})
 				} else {
 					Logger.Errorf("ws :: unsubscribe is from an unknown downstream %d", downstream_id)
@@ -483,7 +495,7 @@ main_loop:
 	}
 }
 
-func (stream_mapper *StreamMapper) removeDownstream(remove_downstream_id int, upstream_wg *sync.WaitGroup) {
+func (stream_mapper *streamMapper) removeDownstream(remove_downstream_id int, upstream_wg *sync.WaitGroup) {
 	Logger.Infof("ws :: removing downstream id: %d", remove_downstream_id)
 	downstream_info, is_downstream := stream_mapper.Downstreams[remove_downstream_id]
 	if !is_downstream {
@@ -494,7 +506,7 @@ func (stream_mapper *StreamMapper) removeDownstream(remove_downstream_id int, up
 		stream_mapper.unsubscribe(stream_mapper.Upstreams, mapper_id)
 	}
 	downstream_info.Cancel()
-	close(downstream_info.Downstream.ResponseChan)
+	close(downstream_info.ResponseChan)
 	delete(stream_mapper.Downstreams, remove_downstream_id)
 
 	if len(stream_mapper.Downstreams) == 0 {
@@ -502,7 +514,7 @@ func (stream_mapper *StreamMapper) removeDownstream(remove_downstream_id int, up
 	}
 }
 
-func (stream_mapper *StreamMapper) processConfirmSubscribe(payload WsPayload, upstream *StreamMapperUpstream) {
+func (stream_mapper *streamMapper) processConfirmSubscribe(payload wsPayload, upstream *streamMapperUpstream) {
 	mapper_id, sub_id := payload.ConfirmSubscribe.Id, payload.ConfirmSubscribe.Result
 
 	Logger.Debugf("ws :: upstream %d confirms mapper_id %d with subscription id %d", upstream.Index, mapper_id, sub_id)
@@ -534,7 +546,7 @@ func (stream_mapper *StreamMapper) processConfirmSubscribe(payload WsPayload, up
 	}
 }
 
-func (stream_mapper *StreamMapper) processNotification(payload WsPayload, upstream *StreamMapperUpstream) {
+func (stream_mapper *streamMapper) processNotification(payload wsPayload, upstream *streamMapperUpstream) {
 	notification := payload.Notification
 
 	if notification.Params == nil {
@@ -555,7 +567,7 @@ func (stream_mapper *StreamMapper) processNotification(payload WsPayload, upstre
 		Logger.Warnf("ws :: zero mapper for subscription %d", subscription_id)
 	}
 
-	slot := notification.GetSlot()
+	slot := notification.getSlot()
 	for mapper_id := range mapper_id_list.List {
 		info, ok := stream_mapper.SubscriptionInfo[mapper_id]
 		if !ok {
@@ -590,7 +602,7 @@ func (stream_mapper *StreamMapper) processNotification(payload WsPayload, upstre
 	}
 }
 
-func (stream_mapper *StreamMapper) processSubscribeRequest(downstream_id int, payload WsPayload) {
+func (stream_mapper *streamMapper) processSubscribeRequest(downstream_id int, payload wsPayload) {
 	upstreams := stream_mapper.Upstreams
 	downstream, ok := stream_mapper.Downstreams[downstream_id]
 	if !ok {
@@ -604,7 +616,7 @@ func (stream_mapper *StreamMapper) processSubscribeRequest(downstream_id int, pa
 		IsConfirmed:      false,
 		IsUnsubscribed:   false,
 		OriginalMethodId: subscribe_method.Id,
-		SubscriptionType: FindSubscriptionType(subscribe_method.Method),
+		SubscriptionType: findSubscriptionType(subscribe_method.Method),
 		Upstreams:        make(map[int]bool),
 		Slot:             0,
 	}
@@ -620,7 +632,7 @@ func (stream_mapper *StreamMapper) processSubscribeRequest(downstream_id int, pa
 	}
 }
 
-func (stream_mapper *StreamMapper) RunDownstream(w http.ResponseWriter, req *http.Request) {
+func (stream_mapper *streamMapper) runDownstream(w http.ResponseWriter, req *http.Request) {
 	conn, err := stream_mapper.Upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		Logger.Errorf("ws :: failed to upgrade websocket connection: %+v", err)
@@ -631,9 +643,9 @@ func (stream_mapper *StreamMapper) RunDownstream(w http.ResponseWriter, req *htt
 		conn.Close()
 	}()
 
-	response_chan := make(chan WsPayload)
+	response_chan := make(chan wsPayload)
 	downstream_id := <-stream_mapper.DownstreamIdChan
-	new_downstream := &Downstream{
+	new_downstream := &wsDownstream{
 		DownstreamId: downstream_id,
 		ResponseChan: response_chan,
 	}

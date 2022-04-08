@@ -1,11 +1,16 @@
-# solmul a Solana RPC Multiplexer
+# **solmul** a Solana rpc Multiplexer
 
-Multiplexer for solana
+`solmul` is a **sol**ana rpc **mul**tiplexer, which sends the same requests to multiple validators.
 
-## get the binary
+- for all rpc calls except send transaction, the first response is sent back.
+
+- for all subscription calls, the notification is inspected by looking at the slot number - and
+  only the notification with slot greater than the last seen slot number is sent back.
+
+## Installation
 
 ```bash
-go get github.com/foonetic/solmul/solmul@latest
+go get github.com/foonetic/solmul@latest
 ```
 
 ## run the binary

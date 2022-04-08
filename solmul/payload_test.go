@@ -14,7 +14,7 @@ func TestUnmarshalWsPayload(t *testing.T) {
 	}
 
 	for desired_type, payload_to_parse := range to_test {
-		result, err := UnmarshalWsPayload([]byte(payload_to_parse))
+		result, err := unmarshalWsPayload([]byte(payload_to_parse))
 		if err != nil {
 			t.Errorf("failed to parse the payload: %+v: %s", err, payload_to_parse)
 		} else {

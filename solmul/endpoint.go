@@ -7,12 +7,22 @@ import (
 	"strconv"
 )
 
-type Endpoint struct {
+// endPoint contains the parsed rpc endpoint and websocket endpoint
+type endPoint struct {
 	Rpc       string
 	Websocket string
 }
 
-func GetEndpoint(input string) (endpoint Endpoint, err error) {
+// ParseEndpoint translates a string into proper solana endpoint.
+//
+// • mainnet-beta, localhost, devnet, testnet, and mainnet-beta-serum is translated into proper urls.
+//
+// • other strings are treated like urls.
+//
+// • web socket port will be rpc port number if rpc port number is explicitly set; otherwise it assumes
+// web socket and rpc are running on same port.
+//
+func ParseEndpoint(input string) (endpoint endPoint, err error) {
 	realUrl := input
 	switch input {
 	case "devnet":
@@ -59,7 +69,7 @@ func GetEndpoint(input string) (endpoint Endpoint, err error) {
 		ws_schema = "wss"
 	}
 
-	endpoint = Endpoint{
+	endpoint = endPoint{
 		Rpc:       realUrl,
 		Websocket: ws_schema + "://" + host + ws_port,
 	}

@@ -10,42 +10,35 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func newServer(ctx context.Context, port int, server_mux *http.ServeMux) (*http.Server, context.CancelFunc) {
-	new_base, cancel := context.WithCancel(ctx)
-	return &http.Server{
-		Addr:    fmt.Sprintf(":%d", port),
-		Handler: server_mux,
-		BaseContext: func(net.Listener) context.Context {
-			return new_base
-		},
-	}, cancel
-}
-
 // RunServer launches servers for rpc and websockets in a separate go routine.
-// - the servers can be shut down by cancelling the input context.
-// - if rpc_port and ws_port is the same, only one single server will be launched.
-// - returned <-chan bool can be used to wait on the process to finish.
+//
+// • the servers can be shut down by cancelling the input context.
+//
+// • if rpc_port and ws_port is the same, only one single server will be launched.
+//
+// • returned channel can be used to wait on the process to finish.
+//
 func RunServer(ctx context.Context, rpc_urls, ws_urls []string, rpc_port, ws_port int) (<-chan struct{}, error) {
 	if len(rpc_urls) == 0 {
 		return nil, fmt.Errorf("rpc urls is nil")
 	}
 	rpc_handler := rpcCaller{Urls: rpc_urls}
 
-	ws_handler, err := NewStreamMapper(ws_urls)
+	ws_handler, err := newStreamMapper(ws_urls)
 	if err != nil {
 		return nil, err
 	}
 
 	// Launch web socket loop
-	go ws_handler.MainLoop(ctx)
+	go ws_handler.mainLoop(ctx)
 
 	server_mux := http.NewServeMux()
 
 	server_mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		if websocket.IsWebSocketUpgrade(req) {
-			ws_handler.RunDownstream(w, req)
+			ws_handler.runDownstream(w, req)
 		} else {
-			rpc_handler.HandleRequest(w, req)
+			rpc_handler.handleRequest(w, req)
 		}
 	})
 
@@ -67,6 +60,17 @@ func RunServer(ctx context.Context, rpc_urls, ws_urls []string, rpc_port, ws_por
 	go serverLoop(ctx, done_sig, servers, cancels)
 
 	return done_sig, nil
+}
+
+func newServer(ctx context.Context, port int, server_mux *http.ServeMux) (*http.Server, context.CancelFunc) {
+	new_base, cancel := context.WithCancel(ctx)
+	return &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: server_mux,
+		BaseContext: func(net.Listener) context.Context {
+			return new_base
+		},
+	}, cancel
 }
 
 func serverLoop(ctx context.Context, done_sig chan<- struct{}, servers []*http.Server, cancels []context.CancelFunc) {

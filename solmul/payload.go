@@ -6,6 +6,20 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+// arrayContains check if a value is in an array.
+func arrayContains[T comparable](array []T, value T) bool {
+	for _, v := range array {
+		if v == value {
+			return true
+		}
+	}
+	return false
+}
+
+func toJson[T any](v T) ([]byte, error) {
+	return bson.MarshalExtJSON(v, false, false)
+}
+
 // all possible subscription types.
 var subscrptionTypes = [...]string{
 	"account",
@@ -36,62 +50,58 @@ func init() {
 	}
 }
 
-// UnknownJsonMap is contains all the value that is in the struct explicitly body.
+// UnknownJsonMap contains all the value that is in json but not explicitly defined in struct
 type UnknownJsonMap map[string]bson.RawValue
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // WebSocket
 
-type WsMethodCommon struct {
-	Id      uint64 `bson:"id"`
-	JsonRpc string `bson:"jsonrpc"`
-}
-
-func NewWsMethodCommon(id uint64) WsMethodCommon {
-	return WsMethodCommon{Id: id, JsonRpc: "2.0"}
-}
-
-// WsConfirmSubscribe is the confirmation that server has set up the subscription
+// wsConfirmSubscribe is the confirmation that server has set up the subscription
 // and the subscription id used to cancel the request in is in the result.
 // `{"jsonrpc":"2.0","result":53,"id":1}`
-type WsConfirmSubscribe struct {
-	WsMethodCommon `bson:",inline"`
-	Result         uint64 `bson:"result"`
+type wsConfirmSubscribe struct {
+	Id      uint64 `bson:"id"`
+	JsonRpc string `bson:"jsonrpc"`
+	Result  uint64 `bson:"result"`
 }
 
-// WsConfirmUnsubscribe is the confirmation that server has stopped the subscription.
-type WsConfirmUnsubscribe struct {
-	WsMethodCommon `bson:",inline"`
-	Result         bool `bson:"result"`
+// wsConfirmUnsubscribe is the confirmation that server has stopped the subscription.
+type wsConfirmUnsubscribe struct {
+	Id      uint64 `bson:"id"`
+	JsonRpc string `bson:"jsonrpc"`
+	Result  bool   `bson:"result"`
 }
 
-type WsError struct {
-	WsMethodCommon `bson:",inline"`
-	Error          *bson.RawValue `bson:"error,omitempty"`
+type wsError struct {
+	Id      uint64         `bson:"id"`
+	JsonRpc string         `bson:"jsonrpc"`
+	Error   *bson.RawValue `bson:"error,omitempty"`
 
 	UnknownJsonMap `bson:",inline"`
 }
 
-// WsSubscribeMethod
-type WsSubscribeMethod struct {
-	WsMethodCommon `bson:",inline"`
-	Method         string         `bson:"method"`
-	Params         *bson.RawValue `bson:"params,omitempty"`
+// wsSubscribeMethod
+type wsSubscribeMethod struct {
+	Id      uint64         `bson:"id"`
+	JsonRpc string         `bson:"jsonrpc"`
+	Method  string         `bson:"method"`
+	Params  *bson.RawValue `bson:"params,omitempty"`
 
 	UnknownJsonMap `bson:",inline"`
 }
 
-// WsUnsubscribeMethod
-type WsUnsubscribeMethod struct {
-	WsMethodCommon `bson:",inline"`
-	Method         string   `bson:"method"`
-	Params         []uint64 `bson:"params"`
+// wsUnsubscribeMethod
+type wsUnsubscribeMethod struct {
+	Id      uint64   `bson:"id"`
+	JsonRpc string   `bson:"jsonrpc"`
+	Method  string   `bson:"method"`
+	Params  []uint64 `bson:"params"`
 
 	UnknownJsonMap `bson:",inline"`
 }
 
-// WsNotificationParams is the body of the notification
-type WsNotificationParams struct {
+// wsNotificationParams is the body of the notification
+type wsNotificationParams struct {
 	UnknownJsonMap `bson:",inline"`
 	Result         *struct {
 		Context *struct {
@@ -105,19 +115,14 @@ type WsNotificationParams struct {
 	Subscription uint64 `bson:"subscription"`
 }
 
-type WsNotificationMethod struct {
-	WsMethodCommon `bson:",inline"`
-	Method         string                `bson:"method"`
-	Params         *WsNotificationParams `bson:"params,omitempty"`
+type wsNotificationMethod struct {
+	Id      uint64                `bson:"id"`
+	JsonRpc string                `bson:"jsonrpc"`
+	Method  string                `bson:"method"`
+	Params  *wsNotificationParams `bson:"params,omitempty"`
 }
 
-type WsSlotNotificationParamsResult struct {
-	Parent uint64 `bson:"parent"`
-	Root   uint64 `bson:"root"`
-	Slot   uint64 `bson:"slot"`
-}
-
-func (params *WsNotificationMethod) GetSlot() uint64 {
+func (params *wsNotificationMethod) getSlot() uint64 {
 	if params.Params == nil {
 		Logger.Error("ws :: notification has no parameter")
 		return 0
@@ -148,94 +153,95 @@ func (params *WsNotificationMethod) GetSlot() uint64 {
 	return 0
 }
 
-// WsPing is the ping message
-type WsPing struct {
+// wsPing is the ping message
+type wsPing struct {
 	JsonRpc string `bson:"jsonrpc"`
 	Method  string `bson:"method,omitempty"`
 	// params in ping should be null
 	Params interface{} `bson:"params"`
 }
 
-type WsPayload struct {
-	Subscribe          *WsSubscribeMethod
-	Unsubscribe        *WsUnsubscribeMethod
-	Notification       *WsNotificationMethod
-	ConfirmSubscribe   *WsConfirmSubscribe
-	ConfirmUnsubscribe *WsConfirmUnsubscribe
-	Error              *WsError
-	Ping               *WsPing
+type wsPayload struct {
+	Subscribe          *wsSubscribeMethod
+	Unsubscribe        *wsUnsubscribeMethod
+	Notification       *wsNotificationMethod
+	ConfirmSubscribe   *wsConfirmSubscribe
+	ConfirmUnsubscribe *wsConfirmUnsubscribe
+	Error              *wsError
+	Ping               *wsPing
 
 	OriginalData []byte
 }
 
-type WsPossible struct {
-	WsMethodCommon `bson:",inline"`
-	Method         string         `bson:"method,omitempty"`
-	Params         *bson.RawValue `bson:"params,omitempty"`
-	Result         *bson.RawValue `bson:"result,omitempty"`
-	Error          *bson.RawValue `bson:"error,omitempty"`
+type wsPossible struct {
+	Id      uint64         `bson:"id"`
+	JsonRpc string         `bson:"jsonrpc"`
+	Method  string         `bson:"method,omitempty"`
+	Params  *bson.RawValue `bson:"params,omitempty"`
+	Result  *bson.RawValue `bson:"result,omitempty"`
+	Error   *bson.RawValue `bson:"error,omitempty"`
 }
 
-func (payload WsPayload) ToJson() ([]byte, error) {
+func (payload wsPayload) toJson() ([]byte, error) {
 	if payload.ConfirmSubscribe != nil {
-		return ToJson(*payload.ConfirmSubscribe)
+		return toJson(*payload.ConfirmSubscribe)
 	}
 	if payload.ConfirmUnsubscribe != nil {
-		return ToJson(*payload.ConfirmUnsubscribe)
+		return toJson(*payload.ConfirmUnsubscribe)
 	}
 	if payload.Notification != nil {
-		return ToJson(*payload.Notification)
+		return toJson(*payload.Notification)
 	}
 	if payload.Subscribe != nil {
-		return ToJson(*payload.Subscribe)
+		return toJson(*payload.Subscribe)
 	}
 	if payload.Unsubscribe != nil {
-		return ToJson(*payload.Unsubscribe)
+		return toJson(*payload.Unsubscribe)
 	}
 	if payload.Ping != nil {
-		return ToJson(*payload.Ping)
+		return toJson(*payload.Ping)
 	}
 	if payload.Error != nil {
-		return ToJson(*payload.Error)
+		return toJson(*payload.Error)
 	}
 
 	return nil, fmt.Errorf("no data in payload")
 }
 
-// UnmarshalWsPayload gets a WsPayload from data.
-func UnmarshalWsPayload(data []byte) (WsPayload, error) {
-	var possbile_value WsPossible
+// unmarshalWsPayload gets a WsPayload from data.
+func unmarshalWsPayload(data []byte) (wsPayload, error) {
+	var possbile_value wsPossible
 	err := bson.UnmarshalExtJSON(data, false, &possbile_value)
 	if err != nil {
-		return WsPayload{}, fmt.Errorf("failed to unmarshal json payload: %+v", err)
+		return wsPayload{}, fmt.Errorf("failed to unmarshal json payload: %+v", err)
 	}
 
-	result := WsPayload{}
+	result := wsPayload{}
 
 	result.OriginalData = data
 
 	if possbile_value.Error != nil {
-		result.Error = &WsError{}
+		result.Error = &wsError{}
 		err = bson.UnmarshalExtJSON(data, false, result.Error)
 	} else if possbile_value.Result != nil {
 		if possbile_value.Result.Type == bson.TypeBoolean {
-			result.ConfirmUnsubscribe = &WsConfirmUnsubscribe{}
+			result.ConfirmUnsubscribe = &wsConfirmUnsubscribe{}
 			err = bson.UnmarshalExtJSON(data, false, result.ConfirmUnsubscribe)
 		} else {
-			result.ConfirmSubscribe = &WsConfirmSubscribe{}
+			result.ConfirmSubscribe = &wsConfirmSubscribe{}
 			err = bson.UnmarshalExtJSON(data, false, result.ConfirmSubscribe)
 		}
-	} else if ArrayContains(allSubscribeMethods, possbile_value.Method) {
-		result.Subscribe = &WsSubscribeMethod{}
+	} else if arrayContains(allSubscribeMethods, possbile_value.Method) {
+		result.Subscribe = &wsSubscribeMethod{}
 		err = bson.UnmarshalExtJSON(data, false, result.Subscribe)
-	} else if ArrayContains(allUnsubscribeMethods, possbile_value.Method) {
-		result.Unsubscribe = &WsUnsubscribeMethod{}
+	} else if arrayContains(allUnsubscribeMethods, possbile_value.Method) {
+		result.Unsubscribe = &wsUnsubscribeMethod{}
 		err = bson.UnmarshalExtJSON(data, false, result.Unsubscribe)
-	} else if ArrayContains(allNotificationMethods, possbile_value.Method) {
-		result.Notification = &WsNotificationMethod{}
+	} else if arrayContains(allNotificationMethods, possbile_value.Method) {
+		result.Notification = &wsNotificationMethod{}
 		err = bson.UnmarshalExtJSON(data, false, result.Notification)
 	} else if possbile_value.Method == "ping" {
-		result.Ping = &WsPing{}
+		result.Ping = &wsPing{}
 		err = bson.UnmarshalExtJSON(data, false, result.Ping)
 	} else {
 		err = fmt.Errorf("unknown payoad: %s", data)
@@ -243,7 +249,7 @@ func UnmarshalWsPayload(data []byte) (WsPayload, error) {
 
 	if err != nil {
 		err = fmt.Errorf("failed to get payload: %+v", err)
-		return WsPayload{}, err
+		return wsPayload{}, err
 	}
 
 	return result, nil
@@ -252,30 +258,16 @@ func UnmarshalWsPayload(data []byte) (WsPayload, error) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Rpc
 
-// SendTransactionMethod is the method to send a transaction.
-const SendTransactionMethod = "sendTransaction"
+// sendTransactionMethod is the method to send a transaction.
+const sendTransactionMethod = "sendTransaction"
 
-type RpcMethodCommon struct {
+type rpcMethodCommon struct {
 	Id      string `bson:"id"`
 	JsonRpc string `bson:"jsonrpc"`
 }
 
-type RpcMethodCall struct {
-	RpcMethodCommon `bson:",inline"`
+type rpcMethodCall struct {
+	rpcMethodCommon `bson:",inline"`
 	UnknownJsonMap  `bson:",inline"`
 	Method          string `bson:"method"`
-}
-
-type RpcMethodResultObject struct {
-	UnknownJsonMap `bson:",inline"`
-	Context        struct {
-		UnknownJsonMap `bson:",inline"`
-		Slot           uint64 `bson:"slot"`
-	} `bson:"context"`
-}
-
-type RpcMethodResult struct {
-	RpcMethodCommon `bson:",inline"`
-	UnknownJsonMap  `bson:",inline"`
-	Result          bson.RawValue `bson:"result"`
 }
