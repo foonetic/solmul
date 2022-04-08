@@ -178,7 +178,7 @@ type downstreamInfo struct {
 	// Downstream is the downstream's id and response channel
 	*wsDownstream
 	// A set of current active subscriptions (by their mapper_id)
-	Subscriptions map[uint64]bool
+	Subscriptions map[uint64]struct{}
 
 	// Cancel cancels the operation to send/receive data by the stream mapper
 	Cancel context.CancelFunc
@@ -209,13 +209,13 @@ type subscriptionInfo struct {
 	// IsUnsubscribed is the mapper id already unsubscribed
 	IsUnsubscribed bool
 	// Number of upstreams handling this subscription
-	Upstreams map[int]bool
+	Upstreams map[int]struct{}
 	// Slot
 	Slot uint64
 }
 
 type mapperIdList struct {
-	List map[uint64]bool
+	List map[uint64]struct{}
 }
 
 // Information for mappers
@@ -230,7 +230,7 @@ type streamMapperUpstream struct {
 	Cancel  context.CancelFunc
 	Context context.Context
 	// Unsubscribed contains all the ids that have unsubscribed sent
-	Unsubscribed map[uint64]bool
+	Unsubscribed map[uint64]struct{}
 }
 
 func (upstream *streamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uint64, subscription_method string) {
@@ -261,7 +261,7 @@ func (upstream *streamMapperUpstream) unsubscribe(mapper_id, unsub_mapper_id uin
 
 	}
 
-	upstream.Unsubscribed[mapper_id] = true
+	upstream.Unsubscribed[mapper_id] = struct{}{}
 
 	select {
 	case upstream.RequestChan <- request:
@@ -293,7 +293,7 @@ type streamMapper struct {
 	// SubscriptionInfo mapper_id to subscription information
 	SubscriptionInfo map[uint64]*subscriptionInfo
 	// UnsubscribeIds is a set of mapper_ids that are unsubscribe mapper_ids
-	UnsubscribeIds map[uint64]bool
+	UnsubscribeIds map[uint64]struct{}
 
 	// Upstreams
 	Upstreams []*streamMapperUpstream
@@ -319,7 +319,7 @@ func newStreamMapper(urls []string) (*streamMapper, error) {
 		CurrentId:         1,
 		CurrentResponseId: 1,
 		SubscriptionInfo:  make(map[uint64]*subscriptionInfo),
-		UnsubscribeIds:    make(map[uint64]bool),
+		UnsubscribeIds:    make(map[uint64]struct{}),
 	}, nil
 }
 
@@ -368,7 +368,7 @@ func (stream_mapper *streamMapper) unsubscribe(upstreams []*streamMapperUpstream
 
 	unsub_mapper_id := info.UnsubscribeMapperId
 	info.IsUnsubscribed = true
-	stream_mapper.UnsubscribeIds[unsub_mapper_id] = true
+	stream_mapper.UnsubscribeIds[unsub_mapper_id] = struct{}{}
 
 	for _, upstream := range upstreams {
 		_, ok := info.Upstreams[upstream.Index]
@@ -395,7 +395,7 @@ func (stream_mapper *streamMapper) initUpstreams(ctx context.Context, upstream_w
 			},
 			Cancel:       upstream_cancel,
 			Context:      upstream_ctx,
-			Unsubscribed: make(map[uint64]bool),
+			Unsubscribed: make(map[uint64]struct{}),
 		}
 		stream_mapper.Upstreams = append(stream_mapper.Upstreams, upstream)
 		upstream_wg.Add(1)
@@ -443,7 +443,7 @@ main_loop:
 			defer downstream_cancel()
 			stream_mapper.Downstreams[new_downstream.DownstreamId] = &downstreamInfo{
 				wsDownstream:  new_downstream,
-				Subscriptions: make(map[uint64]bool),
+				Subscriptions: make(map[uint64]struct{}),
 				Context:       downstream_ctx,
 				Cancel:        downstream_cancel,
 			}
@@ -526,11 +526,11 @@ func (stream_mapper *streamMapper) processConfirmSubscribe(payload wsPayload, up
 	}
 	send_confirm := !info.IsConfirmed
 	info.IsConfirmed = true
-	info.Upstreams[upstream.Index] = true
+	info.Upstreams[upstream.Index] = struct{}{}
 	if v, ok := upstream.SubIdToMapperId[sub_id]; ok {
-		v.List[mapper_id] = true
+		v.List[mapper_id] = struct{}{}
 	} else {
-		upstream.SubIdToMapperId[sub_id] = &mapperIdList{List: map[uint64]bool{mapper_id: true}}
+		upstream.SubIdToMapperId[sub_id] = &mapperIdList{List: map[uint64]struct{}{mapper_id: {}}}
 	}
 	upstream.MapperIdToSubId[mapper_id] = sub_id
 	downstream, ok := stream_mapper.Downstreams[info.DownstreamId]
@@ -580,7 +580,7 @@ func (stream_mapper *streamMapper) processNotification(payload wsPayload, upstre
 
 		// signature notification will be automatically cancelled
 		if notification.Method == "signatureNotification" {
-			upstream.Unsubscribed[mapper_id] = true
+			upstream.Unsubscribed[mapper_id] = struct{}{}
 			info.IsUnsubscribed = true
 			delete(mapper_id_list.List, mapper_id)
 			delete(upstream.MapperIdToSubId, mapper_id)
@@ -617,11 +617,11 @@ func (stream_mapper *streamMapper) processSubscribeRequest(downstream_id int, pa
 		IsUnsubscribed:   false,
 		OriginalMethodId: subscribe_method.Id,
 		SubscriptionType: findSubscriptionType(subscribe_method.Method),
-		Upstreams:        make(map[int]bool),
+		Upstreams:        make(map[int]struct{}),
 		Slot:             0,
 	}
 	stream_mapper.SubscriptionInfo[mapper_id] = info
-	downstream.Subscriptions[mapper_id] = true
+	downstream.Subscriptions[mapper_id] = struct{}{}
 	payload.Subscribe.Id = mapper_id
 	Logger.Debugf("ws :: mapping downstream %d method id %d to mapper_id %d", downstream_id, info.OriginalMethodId, mapper_id)
 	for _, upstream := range upstreams {
