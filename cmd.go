@@ -1,3 +1,13 @@
+// solmul is a package for multiplexing solana json rpc api
+//
+// - for all rpc calls except send transaction, the first response is sent back.
+//
+// - for all subscription calls, the notification is inspected by looking at the slot number - and only the notification with slot greater than the last seen slot number is sent back.
+//
+// After installation, run the command like below
+//
+//     solmul -u mainnet-beta -u mainnet-beta-serum
+//
 package main
 
 import (
@@ -27,7 +37,8 @@ func mainFunc(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.TODO())
+	// set up cancel
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	waiter, err := solmul.RunServer(ctx, rpc_urls, ws_urls, rpc_port, ws_port)
@@ -35,25 +46,27 @@ func mainFunc(cmd *cobra.Command, args []string) {
 		solmul.Logger.Fatalf("failed to start server: %+v", err)
 	}
 
+	// set up signal handling for Ctrl+C/SIGINT
 	sig_chan := make(chan os.Signal, 6)
 	signal.Notify(sig_chan, syscall.SIGINT)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-
+	var wait_for_server_finish sync.WaitGroup
+	wait_for_server_finish.Add(1)
 	go func() {
-		defer wg.Done()
-		called := 0
+		// clean out the wait group.
+		defer wait_for_server_finish.Done()
+		sigint_called := 0
+		// waiter loop.
+		// this needs to be a loop since multiple SIGINTs can be sent before the process exits.
 	waiter_loop:
 		for {
 			select {
 			case <-sig_chan:
-				called++
-				solmul.Logger.Infof("SIGINT received: %d, shutdown", called)
-				if called == 1 {
-					cancel()
-				}
-				if called >= 5 {
+				sigint_called++
+				solmul.Logger.Infof("SIGINT received: %d, shutdown", sigint_called)
+				cancel()
+				// if more than 5 sigints have been received, exit right away.
+				if sigint_called >= 5 {
 					os.Exit(1)
 				}
 			case <-waiter:
@@ -62,7 +75,7 @@ func mainFunc(cmd *cobra.Command, args []string) {
 		}
 	}()
 
-	wg.Wait()
+	wait_for_server_finish.Wait()
 }
 
 func main() {
